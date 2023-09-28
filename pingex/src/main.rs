@@ -20,7 +20,7 @@ async fn main() {
     let final_seq = splited_args[1].parse::<u16>().unwrap();
     let interval_milliseconds = splited_args[2].parse::<u32>().unwrap();
 
-    let packet_handler = |pkt: IcmpV4Packet, send_time: Instant, addr: Ipv4Addr| -> Option<()> {
+    let packet_handler = move |pkt: IcmpV4Packet, send_time: Instant, addr: Ipv4Addr| -> Option<()> {
         let now = Instant::now();
         let elapsed = now - send_time;
         if addr == parsed_addr {
@@ -75,8 +75,15 @@ async fn main() {
             let (resp, sock_addr) = match socketV4.rcv_from() {
                 Ok(tpl) => tpl,
                 Err(e) => {
-                    eprintln!("{:?}", e);
-                    break;
+                    match e.kind() {
+                        std::io::ErrorKind::WouldBlock => {
+                            eprintln!("{},{},{}", addr, sequence, -1);
+                            break;
+                        }
+                        _ => {
+                            panic!("Error receiving packet: {:?}", e);
+                        }
+                    }
                 }
             };
             if packet_handler(resp, send_time, *sock_addr.as_socket_ipv4().unwrap().ip()).is_some()

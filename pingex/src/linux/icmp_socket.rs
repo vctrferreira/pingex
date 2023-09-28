@@ -8,9 +8,13 @@ fn ip_to_socket(ip: &IpAddr) -> SocketAddr {
     SocketAddr::new(*ip, 0)
 }
 
+pub struct IcmpConfigV4 {
+    pub timeout: Option<Duration>,
+}
 pub struct IcmpSocketV4 {
     buffer: Vec<u8>,
-    socket: Socket
+    socket: Socket,
+    config: IcmpConfigV4,
 }
 
 impl IcmpSocketV4 {
@@ -19,6 +23,9 @@ impl IcmpSocketV4 {
         Self {
             buffer: vec![0; 1024],
             socket,
+            config: IcmpConfigV4 {
+                timeout: Some(Duration::from_secs(5)),
+            },
         }
     }
 
@@ -36,6 +43,7 @@ impl IcmpSocketV4 {
     }
 
     pub fn rcv_from(&mut self) -> std::io::Result<(IcmpV4Packet, SockAddr)> {
+        self.socket.set_read_timeout(self.config.timeout)?;
         let mut buf =
             unsafe { &mut *(self.buffer.as_mut_slice() as *mut [u8] as *mut [MaybeUninit<u8>]) };
         let (read_count, addr) = self.socket.recv_from(&mut buf)?;
