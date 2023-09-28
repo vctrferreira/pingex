@@ -1,13 +1,5 @@
 use byteorder::{BigEndian, ByteOrder};
 
-use pnet::packet::{
-    icmp::{
-        echo_request::MutableEchoRequestPacket, IcmpCode, IcmpPacket,
-        IcmpTypes,
-    },
-    Packet,
-};
-
 fn sum_big_endian_words(bs: &[u8]) -> u32 {
     if bs.len() == 0 {
         return 0;
@@ -32,8 +24,6 @@ fn sum_big_endian_words(bs: &[u8]) -> u32 {
 
 #[derive(Debug, PartialEq)]
 pub enum IcmpPacketBuildError {
-    /// The code passed in for the payload was invalid for the message type.
-    InvalidCode(u8),
 }
 
 pub trait WithEchoRequest {
@@ -138,12 +128,11 @@ pub struct IcmpV4Packet {
 impl IcmpV4Packet {
     pub fn parse<B: AsRef<[u8]>>(bytes: B) -> Result<Self, PacketParseError> {
         let mut bytes = bytes.as_ref();
-        let mut packet_len = bytes.len();
+        let packet_len = bytes.len();
         if bytes.len() < 28 {
             return Err(PacketParseError::PacketTooSmall(packet_len));
         }
         bytes = &bytes[20..];
-        packet_len = bytes.len();
         let (typ, code, checksum) = (bytes[0], bytes[1], BigEndian::read_u16(&bytes[2..4]));
         let message = match typ {
             8 => IcmpV4Message::Echo {

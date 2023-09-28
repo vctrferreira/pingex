@@ -5,8 +5,6 @@ use std::net::Ipv4Addr;
 use std::time::{Instant, Duration};
 use linux::icmp_socket::IcmpSocketV4;
 use linux::packet::{IcmpV4Message, IcmpV4Packet};
-use pnet::packet::ethernet::EtherTypes::Ipv4;
-use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
 use crate::linux::packet::WithEchoRequest;
 
 const DEFAULT_ADDR: &str = "0.0.0.0";
@@ -27,7 +25,7 @@ async fn main() {
             if let IcmpV4Message::EchoReply {
                 identifier: _,
                 sequence,
-                payload,
+                payload: _,
             } = pkt.message
             {
                 // println!(
@@ -54,10 +52,10 @@ async fn main() {
     // eprintln!("addr: {}, seq: {}, interval: {}", addr, seq, interval);
     // eprintln!("{},{},{}", addr, final_seq, interval);
 
-    let mut socketV4 = IcmpSocketV4::new();
+    let mut socket_v4 = IcmpSocketV4::new();
     let mut sequence = 0;
 
-    socketV4
+    socket_v4
         .bind(DEFAULT_ADDR.parse().unwrap())
         .unwrap();
 
@@ -68,11 +66,11 @@ async fn main() {
 
         let send_time = Instant::now();
 
-        socketV4.send_to(parsed_addr, packet).unwrap();
+        socket_v4.send_to(parsed_addr, packet).unwrap();
         std::thread::sleep(Duration::from_millis(interval_milliseconds as u64));
 
         loop {
-            let (resp, sock_addr) = match socketV4.rcv_from() {
+            let (resp, sock_addr) = match socket_v4.rcv_from() {
                 Ok(tpl) => tpl,
                 Err(e) => {
                     match e.kind() {
