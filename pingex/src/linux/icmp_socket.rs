@@ -13,7 +13,7 @@ pub struct IcmpConfigV4 {
 }
 pub struct IcmpSocketV4 {
     buffer: Vec<u8>,
-    socket: Socket,
+    pub socket: Socket,
     config: IcmpConfigV4,
 }
 

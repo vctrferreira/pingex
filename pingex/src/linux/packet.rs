@@ -23,8 +23,7 @@ fn sum_big_endian_words(bs: &[u8]) -> u32 {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum IcmpPacketBuildError {
-}
+pub enum IcmpPacketBuildError {}
 
 pub trait WithEchoRequest {
     type Packet;
@@ -46,10 +45,8 @@ pub trait WithEchoReply {
     ) -> Result<Self::Packet, IcmpPacketBuildError>;
 }
 
-
 #[derive(Debug)]
 pub enum IcmpV4Message {
-
     Echo {
         identifier: u16,
         sequence: u16,
@@ -59,9 +56,8 @@ pub enum IcmpV4Message {
         identifier: u16,
         sequence: u16,
         payload: Vec<u8>,
-    }
+    },
 }
-
 
 impl IcmpV4Message {
     // pub fn create_icmp_request_packet(
@@ -70,17 +66,23 @@ impl IcmpV4Message {
     //     identifier: u16,
     // ) -> MutableEchoRequestPacket {
     //     let mut packet = MutableEchoRequestPacket::new(buf).unwrap();
-    
+
     //     packet.set_icmp_type(IcmpTypes::EchoRequest);
     //     packet.set_icmp_code(IcmpCode(0));
     //     packet.set_sequence_number(seq);
     //     packet.set_identifier(identifier);
-    
+
     //     let checksum = pnet::packet::icmp::checksum(&IcmpPacket::new(packet.packet()).unwrap());
     //     packet.set_checksum(checksum);
-    
+
     //     packet
     // }
+
+    pub fn get_sequence(&self) -> u16 {
+        match self {
+            Self::Echo { sequence, .. } | Self::EchoReply { sequence, .. } => *sequence,
+        }
+    }
 
     pub fn get_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(20);
@@ -109,7 +111,6 @@ impl IcmpV4Message {
         bytes
     }
 }
-
 
 #[derive(Debug)]
 pub enum PacketParseError {
@@ -193,7 +194,6 @@ impl IcmpV4Packet {
         self.checksum = self.calculate_checksum();
         self
     }
-
 }
 
 impl TryFrom<&[u8]> for IcmpV4Packet {
@@ -202,7 +202,6 @@ impl TryFrom<&[u8]> for IcmpV4Packet {
         IcmpV4Packet::parse(b)
     }
 }
-
 
 impl WithEchoRequest for IcmpV4Packet {
     type Packet = IcmpV4Packet;
