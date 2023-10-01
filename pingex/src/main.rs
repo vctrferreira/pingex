@@ -3,12 +3,12 @@ mod linux;
 use crate::linux::packet::WithEchoRequest;
 use linux::icmp_socket::IcmpSocketV4;
 use linux::packet::{IcmpV4Message, IcmpV4Packet};
-use std::collections::HashMap;
-use std::env;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{env};
+use tokio::sync::Mutex;
 
 const DEFAULT_ADDR: &str = "0.0.0.0";
 #[derive(Clone)]
@@ -25,15 +25,6 @@ pub struct SequenceValidator {
     processed: bool,
 }
 
-impl SequenceValidator {
-    fn new(sequence: u16, time: Instant) -> Self {
-        Self {
-            sequence,
-            time,
-            processed: false,
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -73,7 +64,7 @@ async fn main() {
     let socket_v4 = Arc::new(Mutex::new(IcmpSocketV4::new()));
     socket_v4
         .lock()
-        .unwrap()
+        .await
         .bind(DEFAULT_ADDR.parse().unwrap())
         .unwrap();
 
@@ -85,6 +76,7 @@ async fn main() {
     let sequence_validator_clone_read = sequence_validator.clone();
 
     let terminate_flag = Arc::new(AtomicBool::new(false));
+    let terminate_flag_clone = terminate_flag.clone();
 
     let send_socket_handle = send_socket(
         socket_v4_clone,
@@ -93,13 +85,13 @@ async fn main() {
         args_data,
     );
 
-    let read_socket_handle = tokio::task::spawn(read_socket(
+    let read_socket_handle = read_socket(
         socket_v4_clone_read,
         sequence_validator_clone_read,
         packet_handler,
         args_data_clone,
-        terminate_flag.clone(),
-    ));
+        terminate_flag_clone.clone(),
+    );
 
     tokio::join!(send_socket_handle, read_socket_handle);
 }
@@ -112,11 +104,12 @@ async fn read_socket(
     terminate_flag: Arc<AtomicBool>,
 ) {
     loop {
+        // eprintln!("flag read: {}", terminate_flag.load(Ordering::Relaxed));
         if terminate_flag.load(Ordering::Relaxed) {
             break;
         }
 
-        let mut seq_validator_guard = sequence_validator_clone.lock().unwrap();
+        let mut seq_validator_guard = sequence_validator_clone.lock().await;
         let seq_validator_guard_filtered: Vec<SequenceValidator> = seq_validator_guard
             .clone()
             .into_iter()
@@ -124,7 +117,7 @@ async fn read_socket(
             .collect();
 
         if seq_validator_guard_filtered.len() > 0 {
-            match socket_v4_clone.lock().unwrap().rcv_from() {
+            match socket_v4_clone.lock().await.rcv_from() {
                 Ok(tpl) => {
                     let (resp, sock_addr) = tpl;
                     let index = seq_validator_guard
@@ -134,16 +127,20 @@ async fn read_socket(
 
                     let send_time = seq_validator_guard[index].time;
 
-                    // let sequence = seq_validator_guard[index].sequence;
                     if packet_handler(resp, send_time, *sock_addr.as_socket_ipv4().unwrap().ip())
                         .is_some()
                     {
                         seq_validator_guard[index].processed = true;
-                        // eprintln!("flag: {}", terminate_flag.load(Ordering::Relaxed));
-                        drop(seq_validator_guard);
                         if terminate_flag.load(Ordering::Relaxed) {
                             break;
                         }
+
+                        if seq_validator_guard[index].sequence >= args_data.final_seq {
+                            terminate_flag.store(true, Ordering::Relaxed);
+                            break;
+                        }
+
+                        drop(seq_validator_guard);
                         continue;
                     }
                 }
@@ -153,16 +150,24 @@ async fn read_socket(
                             .iter()
                             .position(|x| x.processed == false)
                             .unwrap();
-                        seq_validator_guard[find_index].processed = true;
-                        eprintln!(
-                            "{},{},{}",
-                            args_data.target_addr, seq_validator_guard[find_index].sequence, -1
-                        );
 
-                        // eprintln!("flag: {}", terminate_flag.load(Ordering::Relaxed));
-                        drop(seq_validator_guard);
-                        if terminate_flag.load(Ordering::Relaxed) {
-                            break;
+                        let send_time = seq_validator_guard[find_index].time;
+
+                        if send_time.elapsed().as_millis() > 5000 {
+                            eprintln!(
+                                "{},{},{}",
+                                args_data.target_addr, seq_validator_guard[find_index].sequence, -1
+                            );
+                            seq_validator_guard[find_index].processed = true;
+
+                            if seq_validator_guard[find_index].sequence >= args_data.final_seq {
+                                terminate_flag.store(true, Ordering::Relaxed);
+                                // eprintln!("flag: {}", terminate_flag.load(Ordering::Relaxed));
+                                break;
+                            }
+                            drop(seq_validator_guard);
+
+                            continue;
                         }
                     }
                     _ => {
@@ -190,8 +195,8 @@ async fn send_socket(
             break;
         }
 
-        let mut sequence_validator_guard = sequence_validator_clone.lock().unwrap();
-        let sequence = (sequence_validator_guard.len().clone() as u16);
+        let mut sequence_validator_guard = sequence_validator_clone.lock().await;
+        let sequence: u16 = u16::try_from(sequence_validator_guard.len()).unwrap();
         let packet = IcmpV4Packet::with_echo_request(
             42,
             sequence,
@@ -201,7 +206,6 @@ async fn send_socket(
         )
         .unwrap();
 
-        // eprintln!("---len: {}", sequence);
 
         let seq_valitador_entry = SequenceValidator {
             sequence,
@@ -211,15 +215,15 @@ async fn send_socket(
 
         socket_v4_clone
             .lock()
-            .unwrap()
+            .await
             .send_to(args_data.target_addr, packet)
             .unwrap();
 
         sequence_validator_guard.push(seq_valitador_entry);
-        let sequence = sequence_validator_guard.len().clone() as u16;
+        // let sequence = sequence_validator_guard.len().clone() as u16;
 
         if sequence >= args_data.final_seq {
-            terminate_flag.store(true, Ordering::Relaxed);
+            // terminate_flag.store(true, Ordering::Relaxed);
             // eprintln!("flag: {}", terminate_flag.load(Ordering::Relaxed));
             break;
         }

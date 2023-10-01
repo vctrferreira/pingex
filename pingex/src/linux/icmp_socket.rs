@@ -1,8 +1,11 @@
-use std::{net::{Ipv4Addr, SocketAddr, IpAddr}, time::Duration, mem::MaybeUninit};
-use socket2::{Socket, SockAddr, Domain, Type, Protocol};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::{
+    mem::MaybeUninit,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
 use super::packet::IcmpV4Packet;
-
 
 fn ip_to_socket(ip: &IpAddr) -> SocketAddr {
     SocketAddr::new(*ip, 0)
@@ -44,15 +47,13 @@ impl IcmpSocketV4 {
 
     pub fn rcv_from(&mut self) -> std::io::Result<(IcmpV4Packet, SockAddr)> {
         self.socket.set_read_timeout(self.config.timeout)?;
+        self.socket.set_nonblocking(true)?;
         let mut buf =
             unsafe { &mut *(self.buffer.as_mut_slice() as *mut [u8] as *mut [MaybeUninit<u8>]) };
         let (read_count, addr) = self.socket.recv_from(&mut buf)?;
         Ok((self.buffer[0..read_count].try_into().unwrap(), addr))
     }
-
 }
 
 #[cfg(test)]
-mod test {
-
-}
+mod test {}
