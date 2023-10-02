@@ -55,5 +55,3 @@ impl IcmpSocketV4 {
     }
 }
 
-#[cfg(test)]
-mod test {}

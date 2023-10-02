@@ -3,11 +3,11 @@ mod linux;
 use crate::linux::packet::WithEchoRequest;
 use linux::icmp_socket::IcmpSocketV4;
 use linux::packet::{IcmpV4Message, IcmpV4Packet};
+use std::env;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{env};
 use tokio::sync::Mutex;
 
 const DEFAULT_ADDR: &str = "0.0.0.0";
@@ -25,41 +25,26 @@ pub struct SequenceValidator {
     processed: bool,
 }
 
+enum ErrorType {
+    Timeout = -1,
+}
 
-#[tokio::main]
-async fn main() {
-    let args: Vec<_> = env::args().collect();
-    let splited_args: Vec<&str> = args[1].split(",").collect();
+fn get_args(args: String) -> ArgsData {
+    let splited_args: Vec<&str> = args.split(",").collect();
     let addr = splited_args[0];
-    let args_data = ArgsData {
+    ArgsData {
         target_addr: addr.parse().unwrap(),
         final_seq: splited_args[1].parse::<u16>().unwrap(),
         interval_milliseconds: splited_args[2].parse::<u32>().unwrap(),
-    };
+    }
+}
 
+async fn pingex(
+    args_data: ArgsData,
+    success_handler: impl Fn(Ipv4Addr, u16, Duration),
+    error_handler: impl Fn(Ipv4Addr, u16, ErrorType),
+) {
     let args_data_clone = args_data.clone();
-
-    let packet_handler =
-        move |pkt: IcmpV4Packet, send_time: Instant, addr: Ipv4Addr| -> Option<()> {
-            let now = Instant::now();
-            let elapsed = now - send_time;
-            if addr == args_data.target_addr {
-                if let IcmpV4Message::EchoReply {
-                    identifier: _,
-                    sequence,
-                    payload: _,
-                } = pkt.message
-                {
-                    eprintln!("{},{},{}", addr, sequence, elapsed.as_micros());
-                } else {
-                    return None;
-                }
-                Some(())
-            } else {
-                eprintln!("Discarding packet from {}", addr);
-                None
-            }
-        };
 
     let socket_v4 = Arc::new(Mutex::new(IcmpSocketV4::new()));
     socket_v4
@@ -70,7 +55,7 @@ async fn main() {
 
     let sequence_validator = Arc::new(Mutex::new(Vec::<SequenceValidator>::new()));
 
-    let socket_v4_clone = socket_v4.clone();
+    let socket_v4_clone: Arc<Mutex<IcmpSocketV4>> = socket_v4.clone();
     let socket_v4_clone_read = socket_v4.clone();
     let sequence_validator_clone = sequence_validator.clone();
     let sequence_validator_clone_read = sequence_validator.clone();
@@ -88,7 +73,8 @@ async fn main() {
     let read_socket_handle = read_socket(
         socket_v4_clone_read,
         sequence_validator_clone_read,
-        packet_handler,
+        success_handler,
+        error_handler,
         args_data_clone,
         terminate_flag_clone.clone(),
     );
@@ -96,15 +82,30 @@ async fn main() {
     tokio::join!(send_socket_handle, read_socket_handle);
 }
 
+#[tokio::main]
+async fn main() {
+    let args: Vec<String> = env::args().collect();
+    let args_data = get_args(args[1].clone());
+
+    let success_handler = |addr: Ipv4Addr, sequence: u16, elapsed: Duration| {
+        eprintln!("{},{},{}", addr, sequence, elapsed.as_micros());
+    };
+    let error_handler = |addr: Ipv4Addr, sequence: u16, error_type: ErrorType| {
+        eprintln!("{},{},{}", addr, sequence, error_type as i32);
+    };
+
+    pingex(args_data, success_handler, error_handler).await;
+}
+
 async fn read_socket(
     socket_v4_clone: Arc<Mutex<IcmpSocketV4>>,
     sequence_validator_clone: Arc<Mutex<Vec<SequenceValidator>>>,
-    packet_handler: impl Fn(IcmpV4Packet, Instant, Ipv4Addr) -> Option<()> + Send + Sync + 'static,
+    success_handler: impl Fn(Ipv4Addr, u16, Duration),
+    error_handler: impl Fn(Ipv4Addr, u16, ErrorType),
     args_data: ArgsData,
     terminate_flag: Arc<AtomicBool>,
 ) {
     loop {
-        // eprintln!("flag read: {}", terminate_flag.load(Ordering::Relaxed));
         if terminate_flag.load(Ordering::Relaxed) {
             break;
         }
@@ -122,26 +123,40 @@ async fn read_socket(
                     let (resp, sock_addr) = tpl;
                     let index = seq_validator_guard
                         .iter()
-                        .position(|x| x.sequence == resp.message.get_sequence())
-                        .unwrap();
+                        .position(|x| x.sequence == resp.message.get_sequence());
+                    
+                    if index.is_none() {
+                        continue;
+                    }
+
+                    let index = index.unwrap();
 
                     let send_time = seq_validator_guard[index].time;
 
-                    if packet_handler(resp, send_time, *sock_addr.as_socket_ipv4().unwrap().ip())
-                        .is_some()
-                    {
-                        seq_validator_guard[index].processed = true;
-                        if terminate_flag.load(Ordering::Relaxed) {
-                            break;
-                        }
+                    let now = Instant::now();
+                    let elapsed = now - send_time;
+                    let addr = *sock_addr.as_socket_ipv4().unwrap().ip();
+                    if addr == args_data.target_addr {
+                        if let IcmpV4Message::EchoReply {
+                            identifier: _,
+                            sequence,
+                            payload: _,
+                        } = resp.message
+                        {
+                            success_handler(addr, sequence, elapsed);
+                            seq_validator_guard[index].processed = true;
+                            if terminate_flag.load(Ordering::Relaxed) {
+                                break;
+                            }
 
-                        if seq_validator_guard[index].sequence >= args_data.final_seq {
-                            terminate_flag.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                            if seq_validator_guard[index].sequence >= args_data.final_seq {
+                                terminate_flag.store(true, Ordering::Relaxed);
+                                break;
+                            }
 
-                        drop(seq_validator_guard);
-                        continue;
+                            drop(seq_validator_guard);
+                            continue;
+                        }
                     }
                 }
                 Err(e) => match e.kind() {
@@ -154,15 +169,16 @@ async fn read_socket(
                         let send_time = seq_validator_guard[find_index].time;
 
                         if send_time.elapsed().as_millis() > 5000 {
-                            eprintln!(
-                                "{},{},{}",
-                                args_data.target_addr, seq_validator_guard[find_index].sequence, -1
+                            error_handler(
+                                args_data.target_addr,
+                                seq_validator_guard[find_index].sequence,
+                                ErrorType::Timeout,
                             );
+
                             seq_validator_guard[find_index].processed = true;
 
                             if seq_validator_guard[find_index].sequence >= args_data.final_seq {
                                 terminate_flag.store(true, Ordering::Relaxed);
-                                // eprintln!("flag: {}", terminate_flag.load(Ordering::Relaxed));
                                 break;
                             }
                             drop(seq_validator_guard);
@@ -206,7 +222,6 @@ async fn send_socket(
         )
         .unwrap();
 
-
         let seq_valitador_entry = SequenceValidator {
             sequence,
             time: Instant::now(),
@@ -220,11 +235,8 @@ async fn send_socket(
             .unwrap();
 
         sequence_validator_guard.push(seq_valitador_entry);
-        // let sequence = sequence_validator_guard.len().clone() as u16;
 
         if sequence >= args_data.final_seq {
-            // terminate_flag.store(true, Ordering::Relaxed);
-            // eprintln!("flag: {}", terminate_flag.load(Ordering::Relaxed));
             break;
         }
 
@@ -234,5 +246,42 @@ async fn send_socket(
             args_data.interval_milliseconds as u64,
         ))
         .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::get_args;
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn should_have_timeout() {
+        let success_handler = |_addr: Ipv4Addr, _sequence: u16, _elapsed: Duration| {
+            assert!(false);
+        };
+
+        let error_handler = |_addr: Ipv4Addr, _sequence: u16, error_type: super::ErrorType| {
+            println!("error type");
+            assert_eq!(error_type as i32, -1);
+        };
+
+        let args_data = get_args("192.6.6.6,1,1000".to_string());
+
+        super::pingex(args_data, success_handler, error_handler).await;
+    }
+
+    #[tokio::test]
+    async fn should_have_success() {
+        let success_handler = |_addr: Ipv4Addr, _sequence: u16, elapsed: Duration| {
+            assert!(elapsed.as_micros() > 0);
+        };
+
+        let error_handler = |_addr: Ipv4Addr, _sequence: u16, _error_type: super::ErrorType| {
+            assert!(false);
+        };
+
+        let args_data = get_args("127.0.0.1,1,1000".to_string());
+        super::pingex(args_data, success_handler, error_handler).await;
     }
 }
